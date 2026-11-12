@@ -546,7 +546,7 @@ if type(savedReloadOnKick) == "boolean" then initialReloadOnKick = savedReloadOn
 local savedFarmOnlyItems = MethionSH_Env.__MethionSHFarmOnlyItems
 
 local Config = {
-    TweenSpeed = 3000,
+    TweenSpeed = 2000,
     SafeZone = Vector3.new(-212.241150, -33.486183, -283.842651),
     AutoBuyLucky = false,
     AutoRedeemLucky = true,
@@ -612,7 +612,7 @@ local Config = {
             ["Vampire Hideout"] = Vector3.new(396.8, -31.5, -174.0),
         },
     },
-    Player = {JumpPowerEnabled = false, JumpPower = 24, JumpPowerOriginal = nil, JumpUseJumpPowerOriginal = nil, NoClipEnabled = false, WalkSpeedEnabled = false, WalkSpeed = 24, WalkSpeedOriginal = nil},
+    Player = {JumpPowerEnabled = false, JumpPower = 24, JumpPowerOriginal = nil, JumpUseJumpPowerOriginal = nil, NoClipEnabled = true, WalkSpeedEnabled = false, WalkSpeed = 24, WalkSpeedOriginal = nil},
     Trolling = {TargetPlayers = {}},
 }
 
@@ -631,6 +631,7 @@ local State = {
     SelectedPlayer = nil,
     Spectate = false,
     LowGraphics = false,
+    Optimization = false,
     StandFarm = false,
     StandFarmBusy = false,
     StandFarmSelected = {},
@@ -2729,6 +2730,7 @@ local Move = {}
 function Move.flyCF(cf, speed, shouldContinue)
     local requestedSpeed = tonumber(speed) or tonumber(Config.TweenSpeed) or 220
 
+    -- Разгон: recommended 1000–3000 for farm/pickups
     speed = math.clamp(requestedSpeed, 10, 3000)
 
     local targetCFrame = typeof(cf) == "Vector3" and CFrame.new(cf) or cf
@@ -2814,9 +2816,18 @@ function Move.flyCF(cf, speed, shouldContinue)
     return completed
 end
 
+-- Underground farm offset: stay under the item / below ground while farming pickups
+local UNDERGROUND_Y_OFFSET = -18
+
+local function undergroundCFrameForPart(part)
+    if not part then return nil end
+    local p = part.Position
+    return CFrame.new(p.X, p.Y + UNDERGROUND_Y_OFFSET, p.Z)
+end
+
 function Move.flyPart(part)
     if not part or not part.Parent then return false end
-    return Move.flyCF(CFrame.new(part.Position))
+    return Move.flyCF(undergroundCFrameForPart(part) or CFrame.new(part.Position))
 end
 
 function Move.flySafe()
@@ -2844,14 +2855,16 @@ end
 
 function Move.telePart(part)
     if not part or not part.Parent or not part:IsDescendantOf(workspace) then return false end
+    local target = undergroundCFrameForPart(part) or CFrame.new(part.Position + Vector3.new(0, 3, 0))
     if not bypassSupported then
-        return Move.flyCF(CFrame.new(part.Position + Vector3.new(0, 3, 0)), Config.TweenSpeed)
+        return Move.flyCF(target, Config.TweenSpeed)
     end
     local character = LP.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     if not root then return false end
 
-    root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+    State.NoClip = true
+    root.CFrame = target
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
     return true
@@ -3536,7 +3549,7 @@ function Farm.waitForArrival(part, timeout)
         local root = character:FindFirstChild("HumanoidRootPart")
         if not root then return false end
 
-        local targetPosition = part.Position + Vector3.new(0, 3, 0)
+        local targetPosition = part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
         if (root.Position - targetPosition).Magnitude > 0.1 then
             root.CFrame = CFrame.new(targetPosition)
         end
@@ -3561,7 +3574,7 @@ function Farm.waitForArrival(part, timeout)
                 root = character:FindFirstChild("HumanoidRootPart")
                 if not root then return false end
 
-                targetPosition = part.Position + Vector3.new(0, 3, 0)
+                targetPosition = part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
                 if (root.Position - targetPosition).Magnitude > 0.1 then
                     root.CFrame = CFrame.new(targetPosition)
                 end
@@ -3576,7 +3589,7 @@ function Farm.waitForArrival(part, timeout)
             character = LP.Character
             root = character and character:FindFirstChild("HumanoidRootPart")
             if not root then return false end
-            targetPosition = part.Position + Vector3.new(0, 3, 0)
+            targetPosition = part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
             if (root.Position - targetPosition).Magnitude > 0.1 then
                 root.CFrame = CFrame.new(targetPosition)
                 root.AssemblyLinearVelocity = Vector3.zero
@@ -3588,8 +3601,8 @@ function Farm.waitForArrival(part, timeout)
                 and LP.Character == expectedCharacter
                 and part.Parent ~= nil
                 and part:IsDescendantOf(workspace)
-                and (root.Position - (part.Position + Vector3.new(0, 3, 0))).Magnitude <= 0.5
-                and (part.Position - root.Position).Magnitude <= 4.0
+                and (root.Position - (part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0))).Magnitude <= 0.5
+                and Vector3.new((part.Position - root.Position).X, 0, (part.Position - root.Position).Z).Magnitude <= 6.5
         end
 
         RunService.Heartbeat:Wait()
@@ -3667,8 +3680,13 @@ function Farm.pickup(model, part)
     local char = LP.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return false end
-    
-    if (part.Position - root.Position).Magnitude > 4.25 then return false end
+
+    -- Underground farm: allow larger vertical gap, require close XZ
+    local delta = part.Position - root.Position
+    local horizontal = Vector3.new(delta.X, 0, delta.Z).Magnitude
+    local vertical = math.abs(delta.Y)
+    if horizontal > 6.5 then return false end
+    if vertical > 28 then return false end
     return Farm.triggerPickupPrompt(prompt)
 end
 
@@ -3782,7 +3800,7 @@ function Farm.pickupBoosted(model, part, trackedData)
             return false
         end
 
-        local targetPosition = anchor.Position + Vector3.new(0, 3, 0)
+        local targetPosition = anchor.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
         if (root.Position - targetPosition).Magnitude > 0.25
             or (anchor.Position - root.Position).Magnitude > 4.25 then
             return false
@@ -3858,7 +3876,7 @@ function Farm.pickupBoosted(model, part, trackedData)
             local character, humanoid, root, head, torso = characterSnapshot()
 
             if character and humanoid and root and head and torso and anchor and anchor.Parent then
-                local targetPosition = anchor.Position + Vector3.new(0, 3, 0)
+                local targetPosition = anchor.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
                 if (root.Position - targetPosition).Magnitude > 0.04 then
                     root.CFrame = CFrame.new(targetPosition)
                 end
@@ -3992,7 +4010,7 @@ function Farm.pickupTween(model, part, trackedData)
             expectedCharacter = expectedCharacter or character
             if character ~= expectedCharacter then break end
 
-            local targetPosition = part.Position + Vector3.new(0, 2.25, 0)
+            local targetPosition = part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
             if (root.Position - targetPosition).Magnitude > 2.5 then
                 root.CFrame = CFrame.new(targetPosition, part.Position)
                 root.AssemblyLinearVelocity = Vector3.zero
@@ -4039,7 +4057,7 @@ function Farm.pickupTween(model, part, trackedData)
             local maxDistance = tonumber(prompt.MaxActivationDistance) or 10
 
             if distance > math.max(maxDistance, 6) then
-                root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+                root.CFrame = CFrame.new(part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0))
                 root.AssemblyLinearVelocity = Vector3.zero
                 root.AssemblyAngularVelocity = Vector3.zero
                 RunService.Heartbeat:Wait()
@@ -4127,7 +4145,7 @@ function Farm.tick()
                 and trackedPart or part
             if targetPart then
                 local moved = Move.flyCF(
-                    CFrame.new(targetPart.Position + Vector3.new(0, 3, 0)),
+                    CFrame.new(targetPart.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)),
                     Config.TweenSpeed,
                     function()
                         return Farm.isActive()
@@ -4257,9 +4275,42 @@ for _, connectionName in ipairs({"Heartbeat", "CharacterAdded"}) do
     _G.MethionWalkSpeedRuntime[connectionName] = nil
 end
 
-local LowGfx = {}
+local LowGfx = {
+    RenderingDisabled = false,
+}
 
-function LowGfx.apply()
+function LowGfx.set3dRendering(enabled)
+    -- enabled=true means 3D rendering ON; false = disable 3D rendering (FPS boost while AFK farm)
+    local want3d = enabled == true
+    LowGfx.RenderingDisabled = not want3d
+    local ok = false
+    pcall(function()
+        if type(RunService.Set3dRenderingEnabled) == "function" then
+            RunService:Set3dRenderingEnabled(want3d)
+            ok = true
+        end
+    end)
+    if not ok then
+        pcall(function()
+            local s = settings()
+            if s and s.Rendering then
+                if want3d then
+                    s.Rendering.QualityLevel = Enum.QualityLevel.Automatic
+                else
+                    s.Rendering.QualityLevel = Enum.QualityLevel.Level01
+                    pcall(function() s.Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
+                    pcall(function() s.Rendering.EagerBulkExecution = true end)
+                end
+            end
+        end)
+    end
+    return LowGfx.RenderingDisabled
+end
+
+function LowGfx.apply(opts)
+    opts = type(opts) == "table" and opts or {}
+    local disable3d = opts.Disable3D == true or opts.disable3d == true
+
     pcall(function()
         Lighting.GlobalShadows = false
         Lighting.Brightness = 1
@@ -4267,13 +4318,23 @@ function LowGfx.apply()
         Lighting.EnvironmentSpecularScale = 0
         Lighting.FogStart = 0
         Lighting.FogEnd = 1e9
+        Lighting.Technology = Enum.Technology.Compatibility
     end)
     for _, v in ipairs(Lighting:GetChildren()) do
         if v:IsA("PostEffect") then v.Enabled = false end
     end
     pcall(function()
         local t = workspace:FindFirstChildOfClass("Terrain")
-        if t then t.WaterTransparency = 1 end
+        if t then
+            t.WaterTransparency = 1
+            pcall(function() t.Decoration = false end)
+        end
+    end)
+    pcall(function()
+        local s = settings()
+        if s and s.Rendering then
+            s.Rendering.QualityLevel = Enum.QualityLevel.Level01
+        end
     end)
     task.spawn(function()
         local n = 0
@@ -4294,9 +4355,20 @@ function LowGfx.apply()
         end
     end)
     pcall(function()
-        if setfpscap then setfpscap(120) end
+        if setfpscap then setfpscap(240) end
     end)
+
+    if disable3d then
+        LowGfx.set3dRendering(false)
+    end
+
     State.LowGraphics = true
+    State.Optimization = true
+end
+
+function LowGfx.restore3d()
+    LowGfx.set3dRendering(true)
+    State.Optimization = false
 end
 
 local Rejoin = {}
@@ -5954,7 +6026,7 @@ function PlayerTarget.teleportToPlayer(plr)
     -- Prefer visible flight toward the target; fall back to hard set.
     local ok = false
     if Move and type(Move.flyCF) == "function" then
-        local speed = math.clamp(tonumber(Config.TweenSpeed) or 260, 120, 3000)
+        local speed = math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000)
         ok = Move.flyCF(goal, speed, function()
             return PlayerTarget.AutoAttach == true
                 and plr.Parent ~= nil
@@ -6048,7 +6120,7 @@ function PlayerTarget.startAttachLoop(plr)
     PlayerTarget.stopAttach()
     if not plr then return false end
     PlayerTarget.AttachedTo = plr
-    PlayerTarget.FlySpeed = math.clamp(tonumber(Config.TweenSpeed) or 280, 140, 3000)
+    PlayerTarget.FlySpeed = math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000)
     State.NoClip = true
     PlayerTarget.forceNoclip()
 
@@ -6103,7 +6175,7 @@ function PlayerTarget.engageTarget(plr, forceTeleport)
                 if goal and root then
                     local dist = (root.Position - goal.Position).Magnitude
                     if dist > 25 and Move and type(Move.flyCF) == "function" then
-                        Move.flyCF(goal, math.clamp(tonumber(Config.TweenSpeed) or 320, 180, 3000), function()
+                        Move.flyCF(goal, math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000), function()
                             return PlayerTarget.AutoAttach and PlayerTarget.AttachedTo == plr and PlayerTarget.isAlive(plr)
                         end)
                     elseif goal and root then
@@ -6734,8 +6806,26 @@ local function setupAutoPrestige(parentTab)
         end
 
         if not Gui.currentDialogue() then return false end
-        local timeout = optionSequence and 18.0 or 6.0
+        local timeout = optionSequence and 22.0 or 8.0
         local completed = advanceAutoDialogue(optionName or "Option1", timeout)
+        -- Fallback: if still open and no specific sequence, try generic one-click advance
+        if not completed and not optionSequence and Gui.currentDialogue() then
+            for _ = 1, 6 do
+                if not Gui.currentDialogue() then
+                    completed = true
+                    break
+                end
+                pcall(function()
+                    if Gui.hasVisibleOptions(Gui.currentDialogue()) then
+                        Gui.oneClick()
+                    else
+                        Gui.skipClick()
+                    end
+                end)
+                task.wait(0.22)
+            end
+            if not Gui.currentDialogue() then completed = true end
+        end
         if completed and optionSequence and not Gui.currentDialogue() then
             AP.StorylineStep11OptionIndex = 1
         end
@@ -6747,8 +6837,11 @@ local function setupAutoPrestige(parentTab)
     local STORY_OPTION_SEQUENCES = {}
     for i, key in ipairs(STORY_KEYS) do
         if key == "#7" then
+            -- Full multi-option sequence for the critical storyline #7 step
             STORY_OPTION_SEQUENCES[i] = {"Option1", "Option1", "Option2", "Option1", "Option1"}
-            break
+        elseif key == "#11" then
+            -- Extra options sometimes needed on the second #11
+            STORY_OPTION_SEQUENCES[i] = {"Option1", "Option1", "Option1"}
         end
     end
     local STORY_NPCS = {
@@ -8483,10 +8576,74 @@ task.spawn(function()
     end
 end)
 
-local FarmAutomation = FarmTab:Section({Title = "Automation", Side = "left"})
+local FarmAutomation = FarmTab:Section({Title = "Farm Menu", Side = "left"})
+FarmAutomation:Paragraph({
+    Title = "Farm Menu",
+    Desc = "Auto Farm + Optimization. Optimization = Low Graphics and disables 3D rendering for max FPS while farming.",
+})
+
+local OptimizationToggle
+OptimizationToggle = FarmAutomation:Toggle({
+    Title = "Optimization",
+    Desc = "Low Graphics + disable 3D rendering (big FPS boost). Turn off to restore 3D view.",
+    Icon = "cpu",
+    Value = State.Optimization == true,
+    Callback = function(state)
+        if state then
+            LowGfx.apply({Disable3D = true})
+            State.Optimization = true
+            SettingsStore.markDirty()
+            pcall(function()
+                AirflowCompat:Notify({
+                    Title = "Optimization",
+                    Content = "Low Graphics ON · 3D rendering OFF",
+                    Type = "Success",
+                    Duration = 3,
+                })
+            end)
+        else
+            LowGfx.restore3d()
+            State.Optimization = false
+            SettingsStore.markDirty()
+            pcall(function()
+                AirflowCompat:Notify({
+                    Title = "Optimization",
+                    Content = "3D rendering restored. Rejoin to fully reset graphics.",
+                    Type = "Info",
+                    Duration = 4,
+                })
+            end)
+        end
+    end,
+})
+
+FarmAutomation:Button({
+    Title = "Optimization (Low GFX + No 3D)",
+    Desc = "One-click: apply low graphics and disable 3D rendering.",
+    Icon = "gauge",
+    Callback = function()
+        LowGfx.apply({Disable3D = true})
+        State.Optimization = true
+        SettingsStore.markDirty()
+        pcall(function()
+            if OptimizationToggle and type(OptimizationToggle.Set) == "function" then
+                OptimizationToggle:Set(true, true)
+            end
+        end)
+        pcall(function()
+            AirflowCompat:Notify({
+                Title = "Optimization",
+                Content = "Applied: Low Graphics + 3D OFF",
+                Type = "Success",
+                Duration = 3,
+            })
+        end)
+    end,
+})
+
 local AutoFarmToggle = FarmAutomation:Toggle({
     Title = "Auto Farm",
-    Desc = "Farm items automatically.",
+    Desc = "Farm items underground automatically. If Optimization is on, 3D stays disabled.",
     Icon = "zap",
     Value = State.Farm == true,
     Callback = function(state)
@@ -8495,6 +8652,10 @@ local AutoFarmToggle = FarmAutomation:Toggle({
         if state then
             State.NoClip = true
             ItemESP.scan()
+            -- When farm starts with Optimization: keep/force 3D rendering off
+            if State.Optimization or State.LowGraphics then
+                pcall(function() LowGfx.set3dRendering(false) end)
+            end
         else
             if State.HalloweenCandyFarm then
                 State.NoClip = true
@@ -8511,6 +8672,10 @@ local AutoFarmToggle = FarmAutomation:Toggle({
                     task.wait(.05)
                     h:ChangeState(Enum.HumanoidStateType.Freefall)
                 end
+            end
+            -- Optional: leave 3D off if Optimization still enabled
+            if State.Optimization then
+                pcall(function() LowGfx.set3dRendering(false) end)
             end
         end
     end,
@@ -10383,7 +10548,7 @@ function CDR.flyOrSnapTo(goal, keepGoing)
     CDR.forceNoclip(char)
     local dist = (root.Position - goal.Position).Magnitude
     if dist > 20 and Move and type(Move.flyCF) == "function" then
-        local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 3000)
+        local speed = math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000)
         return Move.flyCF(goal, speed, keepGoing) == true
     end
     root.CFrame = goal
@@ -10403,7 +10568,7 @@ function CDR.stickToRoot(targetRoot, dt)
     local goal = CDR.goalBehind(targetRoot, 0.35, 0.35)
     local dist = (root.Position - goal.Position).Magnitude
     dt = tonumber(dt) or 0.016
-    local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 3000)
+    local speed = math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000)
     local alpha
     if dist > 90 then
         alpha = math.clamp(speed * dt / dist, 0.1, 0.5)
@@ -12548,7 +12713,7 @@ local PlayerTab = Window:Tab({Title = "Misc", Icon = "user-round-cog"})
 _G.__MethionMiscSections = _G.__MethionMiscSections or {}
 _G.__MethionMiscSections.Dialogue = PlayerTab:Section({Title = "Dialogue / Skills", Side = "left"})
 _G.__MethionMiscSections.Environment = PlayerTab:Section({Title = "Environment", Side = "left"})
-_G.__MethionMiscSections.Movement = PlayerTab:Section({Title = "Character Movement", Side = "left"})
+_G.__MethionMiscSections.Movement = PlayerTab:Section({Title = "Anti AFK", Side = "left"})
 
 local function miscNotify(title, content, kind)
     pcall(function()
@@ -12643,19 +12808,8 @@ _G.__MethionMiscSections.Environment:Toggle({
 })
 
 local MovementSection = _G.__MethionMiscSections.Movement
-MovementSection:Divider()
-MovementSection:Toggle({
-    Title = "No-Clip",
-    Desc = "Walk through walls.",
-    Icon = "shield-off",
-    Value = Config.Player.NoClipEnabled == true,
-    Callback = function(state)
-        Config.Player.NoClipEnabled = state == true
-        SettingsStore.markDirty()
-        Player.noclip()
-    end,
-})
 
+-- Keep minimal movement state so farm/noclip restore code does not error.
 _G.MethionMovementState = _G.MethionMovementState or {
     wsEnabled = false,
     jpEnabled = false,
@@ -12669,226 +12823,14 @@ for _, key in ipairs({"wsConn", "jpConn"}) do
     if MovementState[key] then pcall(function() MovementState[key]:Disconnect() end) end
     MovementState[key] = nil
 end
--- Keep values from SettingsStore if they were loaded; do not wipe them.
-MovementState.wsEnabled = Config.Player.WalkSpeedEnabled == true
-MovementState.jpEnabled = Config.Player.JumpPowerEnabled == true
-MovementState.wsSpeed = tonumber(Config.Player.WalkSpeed) or 24
-MovementState.jpPower = tonumber(Config.Player.JumpPower) or 24
+MovementState.wsEnabled = false
+MovementState.jpEnabled = false
+Config.Player.WalkSpeedEnabled = false
+Config.Player.JumpPowerEnabled = false
+Config.Player.NoClipEnabled = true -- farm needs noclip; always on for underground pickups
 
-_G.MethionGERFloatRuntime = _G.MethionGERFloatRuntime or {}
-local GERFloat = _G.MethionGERFloatRuntime
-for _, key in ipairs({"conn", "characterConn"}) do
-    if GERFloat[key] then pcall(function() GERFloat[key]:Disconnect() end) end
-    GERFloat[key] = nil
-end
-if GERFloat.track then pcall(function() GERFloat.track:Stop() end) end
-if GERFloat.anim then pcall(function() GERFloat.anim:Destroy() end) end
-GERFloat.enabled = false
-GERFloat.track = nil
-GERFloat.anim = nil
-GERFloat.boundCharacter = nil
-
-local function bindGERFloat(character)
-    if not GERFloat.enabled or not character then return end
-    if GERFloat.track then pcall(function() GERFloat.track:Stop() end) end
-    if GERFloat.anim then pcall(function() GERFloat.anim:Destroy() end) end
-    GERFloat.track = nil
-    GERFloat.anim = nil
-    GERFloat.boundCharacter = character
-
-    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
-    if not humanoid or not GERFloat.enabled or LP.Character ~= character then return end
-
-    local animation = Instance.new("Animation")
-    animation.AnimationId = "rbxassetid://4638021147"
-    GERFloat.anim = animation
-    local ok, track = pcall(function() return humanoid:LoadAnimation(animation) end)
-    if ok and track then
-        GERFloat.track = track
-        track.Priority = Enum.AnimationPriority.Action
-        track.Looped = true
-        track:Play()
-    end
-end
-
-local function setGERFloat(enabled)
-    GERFloat.enabled = enabled == true
-    if GERFloat.conn then pcall(function() GERFloat.conn:Disconnect() end) GERFloat.conn = nil end
-    if GERFloat.characterConn then pcall(function() GERFloat.characterConn:Disconnect() end) GERFloat.characterConn = nil end
-    if not GERFloat.enabled then
-        if GERFloat.track then pcall(function() GERFloat.track:Stop() end) end
-        if GERFloat.anim then pcall(function() GERFloat.anim:Destroy() end) end
-        GERFloat.track = nil
-        GERFloat.anim = nil
-        GERFloat.boundCharacter = nil
-        return
-    end
-
-    if LP.Character then task.spawn(bindGERFloat, LP.Character) end
-    GERFloat.characterConn = LP.CharacterAdded:Connect(function(character)
-        task.wait(0.35)
-        if GERFloat.enabled then bindGERFloat(character) end
-    end)
-    GERFloat.conn = RunService.RenderStepped:Connect(function()
-        if not GERFloat.enabled then return end
-        local character = LP.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        if root then
-            local velocity = root.AssemblyLinearVelocity
-            root.AssemblyLinearVelocity = Vector3.new(velocity.X, 0, velocity.Z)
-        end
-    end)
-end
-
-local function giveClickTpTool()
-    local backpack = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
-    if not backpack then
-        miscNotify("ClickTP", "Backpack is not ready yet.", "Warning")
-        return
-    end
-    local existing = backpack:FindFirstChild("ClickTP")
-    if not existing and LP.Character then existing = LP.Character:FindFirstChild("ClickTP") end
-    if existing then pcall(function() existing:Destroy() end) end
-
-    local tool = Instance.new("Tool")
-    tool.Name = "ClickTP"
-    tool.RequiresHandle = false
-    tool.CanBeDropped = false
-    tool.ToolTip = "Teleport to mouse click"
-    local busy = false
-    tool.Activated:Connect(function()
-        if busy then return end
-        busy = true
-        task.delay(0.08, function() busy = false end)
-        local character = LP.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        local mouse = LP:GetMouse()
-        local hit = mouse and mouse.Hit
-        if not hit then return end
-        root.CFrame = CFrame.new(hit.Position + Vector3.new(0, 3, 0))
-    end)
-    tool.Parent = backpack
-    miscNotify("ClickTP", "ClickTP added to your backpack.", "Success")
-end
-
-MovementSection:Button({
-    Title = "Give ClickTP Tool",
-    Desc = "Equip the tool and click where you want to go.",
-    Icon = "mouse-pointer-2",
-    Callback = giveClickTpTool,
-})
-MovementSection:Slider({
-    Title = "WalkSpeed",
-    Desc = "Speed while WalkSpeed is enabled.",
-    Icon = "gauge",
-    Value = {Min = 1, Max = 200, Default = 24},
-    Step = 1,
-    Callback = function(value)
-        MovementState.wsSpeed = math.clamp(tonumber(value) or 24, 1, 200)
-        Config.Player.WalkSpeed = MovementState.wsSpeed
-    end,
-})
-MovementSection:Toggle({
-    Title = "Enable WalkSpeed",
-    Desc = "Keep this speed after respawning.",
-    Icon = "footprints",
-    Value = false,
-    Callback = function(enabled)
-        MovementState.wsEnabled = enabled == true
-        Config.Player.WalkSpeedEnabled = MovementState.wsEnabled
-        if MovementState.wsConn then pcall(function() MovementState.wsConn:Disconnect() end) MovementState.wsConn = nil end
-        if MovementState.wsEnabled then
-            MovementState.wsConn = RunService.RenderStepped:Connect(function()
-                pcall(function()
-                    local character = LP.Character
-                    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-                    if humanoid then humanoid.WalkSpeed = MovementState.wsSpeed end
-                end)
-            end)
-        end
-    end,
-})
-MovementSection:Toggle({
-    Title = "GER Float",
-    Desc = "Use the floating animation.",
-    Icon = "move-vertical",
-    Value = false,
-    Callback = function(enabled)
-        local ok, err = pcall(setGERFloat, enabled)
-        if not ok then
-            pcall(setGERFloat, false)
-            miscNotify("GER Float", tostring(err), "Warning")
-        end
-    end,
-})
-MovementSection:Slider({
-    Title = "JumpPower",
-    Desc = "Jump power while enabled.",
-    Icon = "arrow-up",
-    Value = {Min = 1, Max = 200, Default = 24},
-    Step = 1,
-    Callback = function(value)
-        MovementState.jpPower = math.clamp(tonumber(value) or 24, 1, 200)
-        Config.Player.JumpPower = MovementState.jpPower
-    end,
-})
-MovementSection:Toggle({
-    Title = "Enable JumpPower",
-    Desc = "Keep this jump power after respawning.",
-    Icon = "arrow-up-right",
-    Value = false,
-    Callback = function(enabled)
-        MovementState.jpEnabled = enabled == true
-        Config.Player.JumpPowerEnabled = MovementState.jpEnabled
-        if MovementState.jpConn then pcall(function() MovementState.jpConn:Disconnect() end) MovementState.jpConn = nil end
-        if MovementState.jpEnabled then
-            MovementState.jpConn = RunService.RenderStepped:Connect(function()
-                pcall(function()
-                    local character = LP.Character
-                    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-                    if humanoid then humanoid.JumpPower = MovementState.jpPower end
-                end)
-            end)
-        end
-    end,
-})
-
-_G.MethionAutoSprintRuntime = _G.MethionAutoSprintRuntime or {}
-local AutoSprint = _G.MethionAutoSprintRuntime
-if AutoSprint.conn then pcall(function() AutoSprint.conn:Disconnect() end) end
-AutoSprint.conn = nil
-AutoSprint.enabled = false
-local function setAutoSprint(enabled)
-    AutoSprint.enabled = enabled == true
-    if AutoSprint.conn then pcall(function() AutoSprint.conn:Disconnect() end) AutoSprint.conn = nil end
-    if not AutoSprint.enabled then return end
-    local lastToggleAt = 0
-    AutoSprint.conn = RunService.Heartbeat:Connect(function()
-        if not AutoSprint.enabled then return end
-        local character = LP.Character
-        if not character or character:GetAttribute("Sprinting") then return end
-        local now = tick()
-        if now - lastToggleAt < 0.25 then return end
-        local remoteFunction = character:FindFirstChild("RemoteFunction")
-        if not remoteFunction then return end
-        lastToggleAt = now
-        pcall(function() remoteFunction:InvokeServer("ToggleSprinting") end)
-    end)
-end
-MovementSection:Toggle({
-    Title = "Auto Sprint",
-    Desc = "Sprint automatically.",
-    Icon = "zap",
-    Value = false,
-    Callback = function(enabled)
-        local ok, err = pcall(setAutoSprint, enabled)
-        if not ok then
-            pcall(setAutoSprint, false)
-            miscNotify("Auto Sprint", tostring(err), "Warning")
-        end
-    end,
-})
+-- Character Movement UI removed (WalkSpeed / JumpPower / ClickTP / GER Float / Auto Sprint / Anti Time Stop).
+-- Only Anti-AFK remains as requested.
 
 -- Anti-AFK: stops Roblox's 20 minute idle kick
 local antiAfkEnabled = true
@@ -12902,6 +12844,10 @@ pcall(function()
         end)
     end)
 end)
+MovementSection:Paragraph({
+    Title = "Character Movement",
+    Desc = "WalkSpeed / JumpPower / ClickTP / GER Float removed. Farm uses underground flight + noclip automatically.",
+})
 MovementSection:Toggle({
     Title = "Anti AFK",
     Desc = "Prevents the idle kick while farming (20 min inactivity).",
@@ -12909,62 +12855,6 @@ MovementSection:Toggle({
     Value = true,
     Callback = function(enabled)
         antiAfkEnabled = enabled == true
-    end,
-})
-
--- Anti Time Stop (best effort, client side): undo freezing of our own character
-local antiTimeStopConn
-local antiTimeStopFrozenSince
-local antiTimeStopSpeed, antiTimeStopJump = 16, 50
-local function setAntiTimeStop(enabled)
-    if antiTimeStopConn then
-        antiTimeStopConn:Disconnect()
-        antiTimeStopConn = nil
-    end
-    antiTimeStopFrozenSince = nil
-    if not enabled then return end
-    antiTimeStopConn = RunService.Heartbeat:Connect(function()
-        local character = LP.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        local hum = character and character:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 then
-            antiTimeStopFrozenSince = nil
-            return
-        end
-        -- remember normal movement values while not frozen
-        if not root.Anchored then
-            if hum.WalkSpeed > 0 then antiTimeStopSpeed = hum.WalkSpeed end
-            if hum.JumpPower > 0 then antiTimeStopJump = hum.JumpPower end
-            antiTimeStopFrozenSince = nil
-            return
-        end
-        antiTimeStopFrozenSince = antiTimeStopFrozenSince or tick()
-        if tick() - antiTimeStopFrozenSince >= 0.15 then
-            pcall(function() root.Anchored = false end)
-            pcall(function()
-                if hum.WalkSpeed <= 0 then hum.WalkSpeed = antiTimeStopSpeed end
-                if hum.JumpPower <= 0 then hum.JumpPower = antiTimeStopJump end
-                hum.PlatformStand = false
-            end)
-            for _, part in ipairs(character:GetChildren()) do
-                if part:IsA("BasePart") and part.Anchored then
-                    pcall(function() part.Anchored = false end)
-                end
-            end
-        end
-    end)
-end
-MovementSection:Toggle({
-    Title = "Anti Time Stop",
-    Desc = "Tries to unfreeze your character when time is stopped (client side, may not work if the server enforces the freeze).",
-    Icon = "clock",
-    Value = false,
-    Callback = function(enabled)
-        local ok, err = pcall(setAntiTimeStop, enabled)
-        if not ok then
-            pcall(setAntiTimeStop, false)
-            miscNotify("Anti Time Stop", tostring(err), "Warning")
-        end
     end,
 })
 
@@ -15526,32 +15416,32 @@ local PickupSettings = PickupsTab:Section({Title = "Pickup", Side = "right"})
 PickupFlight:Paragraph({Title = "Flight speed", Desc = "How fast auto-farm flies between items. Very high speeds can get you kicked."})
 PickupFlight:Slider({
     Title = "Tween Speed",
-    Desc = "Higher = faster flight (up to 3000).",
+    Desc = "Разгон полёта: 1000–3000. Работает и для Auto Farm / Pickups под землёй.",
     Icon = "gauge",
-    Value = {Min = 10, Max = 3000, Default = math.clamp(tonumber(Config.TweenSpeed) or 3000, 10, 3000)},
-    Step = 5,
+    Value = {Min = 1000, Max = 3000, Default = math.clamp(tonumber(Config.TweenSpeed) or 2000, 1000, 3000)},
+    Step = 50,
     Callback = function(v)
-        Config.TweenSpeed = math.clamp(tonumber(v) or 3000, 10, 3000)
+        Config.TweenSpeed = math.clamp(tonumber(v) or 2000, 1000, 3000)
         SettingsStore.markDirty()
     end,
 })
 PickupFlight:Button({
-    Title = "Fast preset (400)",
-    Desc = "Quick fast flight value.",
-    Icon = "zap",
-    Callback = function() Config.TweenSpeed = 400 SettingsStore.markDirty() end,
+    Title = "Разгон 1000",
+    Desc = "Минимальный разгон.",
+    Icon = "gauge",
+    Callback = function() Config.TweenSpeed = 1000 SettingsStore.markDirty() end,
 })
 PickupFlight:Button({
-    Title = "Max preset (3000)",
-    Desc = "Sets flight speed to 3000.",
+    Title = "Разгон 2000",
+    Desc = "Средний разгон (рекомендуется).",
+    Icon = "zap",
+    Callback = function() Config.TweenSpeed = 2000 SettingsStore.markDirty() end,
+})
+PickupFlight:Button({
+    Title = "Разгон 3000",
+    Desc = "Максимальный разгон.",
     Icon = "rocket",
     Callback = function() Config.TweenSpeed = 3000 SettingsStore.markDirty() end,
-})
-PickupFlight:Button({
-    Title = "Normal preset (220)",
-    Desc = "Default flight value.",
-    Icon = "gauge",
-    Callback = function() Config.TweenSpeed = 220 SettingsStore.markDirty() end,
 })
 PickupSettings:Slider({
     Title = "Instant Arrival Delay",
@@ -15576,7 +15466,7 @@ PickupSettings:Button({
     Callback = function()
         Config.InstantDelay = 0.5
         Config.InstantCooldown = 1.2
-        Config.TweenSpeed = math.min(Config.TweenSpeed or 220, 220)
+        Config.TweenSpeed = math.clamp(Config.TweenSpeed or 1000, 1000, 1500)
         SettingsStore.markDirty()
         AirflowCompat:Notify({Title = "Pickups", Content = "Slow preset applied.", Type = "Info", Duration = 4})
     end,
@@ -15795,13 +15685,123 @@ _G.__MethionSettingsSections.General:Toggle({
     end,
 })
 
+_G.__MethionSettingsSections.General:Button({
+    Title = "Server Hop",
+    Desc = "Teleport to a different public server (same place). Prefers fuller servers. Enable 'Reload script on kick' so the script comes back after hop.",
+    Icon = "shuffle",
+    Callback = function()
+        task.spawn(function()
+            pcall(function()
+                AirflowCompat:Notify({
+                    Title = "Server Hop",
+                    Content = "Looking for another server...",
+                    Type = "Info",
+                    Duration = 3,
+                })
+            end)
+
+            local TeleportService = game:GetService("TeleportService")
+            local placeId = game.PlaceId
+            local jobId = game.JobId
+            local candidates = {}
+
+            local okHttp, response = pcall(function()
+                return game:HttpGet(
+                    "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?sortOrder=Desc&limit=100"
+                )
+            end)
+            if okHttp and type(response) == "string" then
+                local decodeOk, payload = pcall(function()
+                    return HttpService:JSONDecode(response)
+                end)
+                if decodeOk and type(payload) == "table" and type(payload.data) == "table" then
+                    for _, server in ipairs(payload.data) do
+                        local id = server.id
+                        local playing = tonumber(server.playing) or 0
+                        local maximum = tonumber(server.maxPlayers) or 0
+                        if type(id) == "string" and id ~= "" and id ~= jobId and maximum > 0 and playing > 0 and playing < maximum then
+                            table.insert(candidates, {id = id, playing = playing})
+                        end
+                    end
+                    table.sort(candidates, function(a, b)
+                        return a.playing > b.playing
+                    end)
+                end
+            end
+
+            local hopped = false
+            for _, server in ipairs(candidates) do
+                local okTele = pcall(function()
+                    TeleportService:TeleportToPlaceInstance(placeId, server.id, LP)
+                end)
+                if okTele then
+                    hopped = true
+                    break
+                end
+                task.wait(0.15)
+            end
+
+            if not hopped then
+                -- Fallback: let Roblox pick any server
+                local okFallback, err = pcall(function()
+                    TeleportService:Teleport(placeId, LP)
+                end)
+                if not okFallback then
+                    pcall(function()
+                        AirflowCompat:Notify({
+                            Title = "Server Hop",
+                            Content = "Hop failed: " .. tostring(err or "no servers found"),
+                            Type = "Warning",
+                            Duration = 5,
+                        })
+                    end)
+                end
+            end
+        end)
+    end,
+})
+
 _G.__MethionSettingsSections.Performance:Paragraph({Title = "Performance", Desc = "Use this if the game runs slowly. Rejoin to reset it."})
 _G.__MethionSettingsSections.Performance:Button({
     Title = "Low Graphics",
-    Desc = "Lowers graphics. Rejoin to reset.",
+    Desc = "Lowers graphics only (3D stays on). Rejoin to reset materials.",
     Icon = "zap",
     Callback = function()
-        if not State.LowGraphics then LowGfx.apply() end
+        LowGfx.apply({Disable3D = false})
+    end,
+})
+_G.__MethionSettingsSections.Performance:Button({
+    Title = "Optimization (Low GFX + No 3D)",
+    Desc = "Low graphics and disable 3D rendering for max FPS while farming.",
+    Icon = "cpu",
+    Callback = function()
+        LowGfx.apply({Disable3D = true})
+        State.Optimization = true
+        SettingsStore.markDirty()
+        pcall(function()
+            AirflowCompat:Notify({
+                Title = "Optimization",
+                Content = "Low Graphics ON · 3D rendering OFF",
+                Type = "Success",
+                Duration = 3,
+            })
+        end)
+    end,
+})
+_G.__MethionSettingsSections.Performance:Button({
+    Title = "Restore 3D Rendering",
+    Desc = "Turn 3D rendering back on (after Optimization).",
+    Icon = "eye",
+    Callback = function()
+        LowGfx.restore3d()
+        pcall(function()
+            AirflowCompat:Notify({
+                Title = "Optimization",
+                Content = "3D rendering restored.",
+                Type = "Info",
+                Duration = 3,
+            })
+        end)
     end,
 })
 
@@ -17162,7 +17162,7 @@ return function(Window, player, QuestTab, config)
 		while FarmState.Active and item.Parent and tick() - started < 3.5 do
 			part = getItemPart()
 			if not part then break end
-			local targetPosition = part.Position + Vector3.new(0, 2.25, 0)
+			local targetPosition = part.Position + Vector3.new(0, UNDERGROUND_Y_OFFSET, 0)
 			if (hrp.Position - targetPosition).Magnitude > 2.5 then
 				hrp.CFrame = CFrame.new(targetPosition, part.Position)
 				hrp.AssemblyLinearVelocity = Vector3.zero
