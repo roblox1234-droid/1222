@@ -546,7 +546,7 @@ if type(savedReloadOnKick) == "boolean" then initialReloadOnKick = savedReloadOn
 local savedFarmOnlyItems = MethionSH_Env.__MethionSHFarmOnlyItems
 
 local Config = {
-    TweenSpeed = 220,
+    TweenSpeed = 3000,
     SafeZone = Vector3.new(-212.241150, -33.486183, -283.842651),
     AutoBuyLucky = false,
     AutoRedeemLucky = true,
@@ -2307,6 +2307,20 @@ function Selling.clickOptionAndWait(optionName, timeout)
     return false
 end
 
+-- Closes a leftover dialogue (e.g. merchant menu left open by an aborted sale) so sells are not blocked forever.
+function Selling.clearStaleDialogue()
+    if not Gui.currentDialogue() then return true end
+    local untilAt = tick() + 2
+    while Gui.currentDialogue() and tick() < untilAt do
+        task.wait(0.1)
+    end
+    if Gui.currentDialogue() then
+        pcall(Gui.hardCloseDialogue)
+        task.wait(0.15)
+    end
+    return Gui.currentDialogue() == nil
+end
+
 function Selling.sell(toolName, targetTool)
     local tool = targetTool
     if not tool and type(toolName) == "string" then
@@ -2319,48 +2333,60 @@ function Selling.sell(toolName, targetTool)
         return false
     end
 
-    if Gui.currentDialogue() then return false end
+    if not Selling.clearStaleDialogue() then
+        warn("[Sell] blocked: another dialogue is open and could not be closed")
+        return false
+    end
 
     Selling.equip(tool)
     task.wait()
     if not Selling.inInventory(tool) then return true end
-    if Gui.currentDialogue() then return false end
+    if not Selling.clearStaleDialogue() then
+        warn("[Sell] blocked after equip: dialogue is open and could not be closed")
+        return false
+    end
 
     local ownedDialogue = nil
-    local function abortSell()
+    local function abortSell(step)
+        warn("[Sell] failed at step: " .. tostring(step) .. " | item=" .. tostring(tool.Name))
         local current = Gui.currentDialogue()
-        if ownedDialogue and current == ownedDialogue then
+        if ownedDialogue or current then
             for _ = 1, 3 do
                 pcall(Gui.skipClick)
                 task.wait()
                 if not Gui.currentDialogue() then break end
             end
+            -- choice menus ignore skipClick; force-close so the next sale is not blocked
+            if Gui.currentDialogue() then
+                pcall(Gui.hardCloseDialogue)
+                task.wait(0.1)
+            end
         end
         return false
     end
 
-    if not Selling.openMerchant() then return false end
+    if not Selling.openMerchant() then warn("[Sell] could not open merchant dialogue") return false end
     ownedDialogue = Gui.currentDialogue()
-    if not ownedDialogue then return false end
-    if not Selling.clickOptionAndWait("Option1", 8) then return abortSell() end
+    if not ownedDialogue then warn("[Sell] merchant dialogue not found") return false end
+    if not Selling.clickOptionAndWait("Option1", 8) then return abortSell("merchant Option1 (1st)") end
     task.wait()
 
     local remote, merchant = Selling.merchantRemote()
-    if not remote or not merchant then return abortSell() end
+    if not remote or not merchant then return abortSell("merchant remote missing") end
     local opened = pcall(function()
         remote:FireServer("PromptTriggered", merchant)
     end)
-    if not opened or not Gui.waitDialogue(5) then return abortSell() end
+    if not opened or not Gui.waitDialogue(5) then return abortSell("2nd dialogue did not open") end
 
-    if not Selling.clickOptionAndWait("Option1", 8) then return abortSell() end
+    if not Selling.clickOptionAndWait("Option1", 8) then return abortSell("merchant Option1 (2nd)") end
     task.wait()
-    if not Selling.clickOptionAndWait("Option6", 8) then return abortSell() end
+    if not Selling.clickOptionAndWait("Option6", 8) then return abortSell("Option6 (sell)") end
 
     local confirmUntil = tick() + 4
     while Selling.inInventory(tool) and tick() < confirmUntil do
         task.wait()
     end
-    if Selling.inInventory(tool) then return abortSell() end
+    if Selling.inInventory(tool) then return abortSell("item still in inventory after sell") end
     return true
 end
 
@@ -2703,7 +2729,7 @@ local Move = {}
 function Move.flyCF(cf, speed, shouldContinue)
     local requestedSpeed = tonumber(speed) or tonumber(Config.TweenSpeed) or 220
 
-    speed = math.clamp(requestedSpeed, 10, 1000)
+    speed = math.clamp(requestedSpeed, 10, 3000)
 
     local targetCFrame = typeof(cf) == "Vector3" and CFrame.new(cf) or cf
     if typeof(targetCFrame) ~= "CFrame" then return false end
@@ -5928,7 +5954,7 @@ function PlayerTarget.teleportToPlayer(plr)
     -- Prefer visible flight toward the target; fall back to hard set.
     local ok = false
     if Move and type(Move.flyCF) == "function" then
-        local speed = math.clamp(tonumber(Config.TweenSpeed) or 260, 120, 1000)
+        local speed = math.clamp(tonumber(Config.TweenSpeed) or 260, 120, 3000)
         ok = Move.flyCF(goal, speed, function()
             return PlayerTarget.AutoAttach == true
                 and plr.Parent ~= nil
@@ -6022,7 +6048,7 @@ function PlayerTarget.startAttachLoop(plr)
     PlayerTarget.stopAttach()
     if not plr then return false end
     PlayerTarget.AttachedTo = plr
-    PlayerTarget.FlySpeed = math.clamp(tonumber(Config.TweenSpeed) or 280, 140, 1000)
+    PlayerTarget.FlySpeed = math.clamp(tonumber(Config.TweenSpeed) or 280, 140, 3000)
     State.NoClip = true
     PlayerTarget.forceNoclip()
 
@@ -6077,7 +6103,7 @@ function PlayerTarget.engageTarget(plr, forceTeleport)
                 if goal and root then
                     local dist = (root.Position - goal.Position).Magnitude
                     if dist > 25 and Move and type(Move.flyCF) == "function" then
-                        Move.flyCF(goal, math.clamp(tonumber(Config.TweenSpeed) or 320, 180, 1000), function()
+                        Move.flyCF(goal, math.clamp(tonumber(Config.TweenSpeed) or 320, 180, 3000), function()
                             return PlayerTarget.AutoAttach and PlayerTarget.AttachedTo == plr and PlayerTarget.isAlive(plr)
                         end)
                     elseif goal and root then
@@ -9142,7 +9168,7 @@ end
 
 function StandFarm.readSkin()
     local exactNames = {"Skin", "StandSkin", "SkinName", "CurrentSkin", "StandSkinName"}
-    local hints = {"skin", "variant", "form", "shiny"}
+    local hints = {"skin", "variant", "shiny"}
     local roots = {}
     local stats = LP:FindFirstChild("PlayerStats")
     if stats then table.insert(roots, stats) end
@@ -9531,6 +9557,9 @@ function StandFarm.start()
                     skinText = StandFarm.currentSkin()
                     if not StandFarm.skinMatches(skinText, current) then
                         keep = false
+                        warn("[Stand Farm] RESET by skin filter: stand=" .. tostring(current) .. " skin=" .. tostring(skinText)
+                            .. " selectedSkins=" .. table.concat(State.StandFarmSkinsSelected, "|")
+                            .. " customSkins=" .. table.concat(State.StandFarmSkinsCustom, "|"))
                         StandFarm.setStatus(current .. " skin \"" .. tostring(skinText) .. "\" not wanted — resetting.")
                     else
                         StandFarm.setStatus(current .. " skin match: " .. tostring(skinText))
@@ -9584,6 +9613,8 @@ function StandFarm.start()
 
             State.StandFarmBusy = true
             if StandFarm.hasStand(current) then
+                warn("[Stand Farm] NOT KEPT: stand='" .. tostring(current) .. "' wanted=" .. tostring(StandFarm.isWanted(current))
+                    .. " selected=" .. table.concat(State.StandFarmSelected, "|"))
                 -- Unwanted stand: remove it with a Rokakaka.
                 if countInventoryName(ROKAKAKA_NAME) <= 0 and not StandFarm.restock(ROKAKAKA_NAME) then
                     StandFarm.stop("Out of Rokakaka (and could not buy or farm more). Current stand: " .. current)
@@ -10352,7 +10383,7 @@ function CDR.flyOrSnapTo(goal, keepGoing)
     CDR.forceNoclip(char)
     local dist = (root.Position - goal.Position).Magnitude
     if dist > 20 and Move and type(Move.flyCF) == "function" then
-        local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 1000)
+        local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 3000)
         return Move.flyCF(goal, speed, keepGoing) == true
     end
     root.CFrame = goal
@@ -10372,7 +10403,7 @@ function CDR.stickToRoot(targetRoot, dt)
     local goal = CDR.goalBehind(targetRoot, 0.35, 0.35)
     local dist = (root.Position - goal.Position).Magnitude
     dt = tonumber(dt) or 0.016
-    local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 1000)
+    local speed = math.clamp(tonumber(Config.TweenSpeed) or 320, 160, 3000)
     local alpha
     if dist > 90 then
         alpha = math.clamp(speed * dt / dist, 0.1, 0.5)
@@ -15495,12 +15526,12 @@ local PickupSettings = PickupsTab:Section({Title = "Pickup", Side = "right"})
 PickupFlight:Paragraph({Title = "Flight speed", Desc = "How fast auto-farm flies between items. Very high speeds can get you kicked."})
 PickupFlight:Slider({
     Title = "Tween Speed",
-    Desc = "Higher = faster flight (up to 1000).",
+    Desc = "Higher = faster flight (up to 3000).",
     Icon = "gauge",
-    Value = {Min = 10, Max = 1000, Default = math.clamp(tonumber(Config.TweenSpeed) or 220, 10, 1000)},
+    Value = {Min = 10, Max = 3000, Default = math.clamp(tonumber(Config.TweenSpeed) or 3000, 10, 3000)},
     Step = 5,
     Callback = function(v)
-        Config.TweenSpeed = math.clamp(tonumber(v) or 220, 10, 1000)
+        Config.TweenSpeed = math.clamp(tonumber(v) or 3000, 10, 3000)
         SettingsStore.markDirty()
     end,
 })
@@ -15509,6 +15540,12 @@ PickupFlight:Button({
     Desc = "Quick fast flight value.",
     Icon = "zap",
     Callback = function() Config.TweenSpeed = 400 SettingsStore.markDirty() end,
+})
+PickupFlight:Button({
+    Title = "Max preset (3000)",
+    Desc = "Sets flight speed to 3000.",
+    Icon = "rocket",
+    Callback = function() Config.TweenSpeed = 3000 SettingsStore.markDirty() end,
 })
 PickupFlight:Button({
     Title = "Normal preset (220)",
